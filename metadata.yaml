@@ -1,0 +1,20 @@
+name: astrbot_plugin_model_usage
+desc: 模型用量统计——记录每次对话调用的模型、Token 用量与耗时，按模型 / 按天汇总，附网页面板。
+short_desc: 统计各模型的调用次数与 Token 用量，带网页面板
+version: 1.0.0
+author: 阿尔瓦·洛伦兹
+display_name: 模型用量统计
+tags:
+  - 统计
+  - 用量
+  - Token
+  - 模型
+  - usage
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - qq_official_webhook
+astrbot_version: ">=4.24.2"
+pages:
+  - name: usage
+    title: 模型用量统计

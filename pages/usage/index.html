@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>模型用量统计</title>
+    <style>
+      :root {
+        --bg: #f6f7f9;
+        --panel: #fff;
+        --line: #e6e8ec;
+        --text: #23262b;
+        --muted: #7b8493;
+        --accent: #4a7c59;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 14px;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      .sub { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+      .topbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+      .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+      .seg button {
+        border: 0; background: transparent; padding: 6px 14px; cursor: pointer;
+        color: var(--muted); font-size: 13px;
+      }
+      .seg button.active { background: var(--accent); color: #fff; }
+      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 18px; }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+      .card .k { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+      .card .v { font-size: 22px; font-weight: 600; letter-spacing: -0.5px; }
+      .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+      .panel h2 { font-size: 14px; margin: 0 0 12px; font-weight: 600; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+      th { color: var(--muted); font-weight: 500; font-size: 12px; }
+      tbody tr:last-child td { border-bottom: 0; }
+      td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+      .muted { color: var(--muted); }
+      .empty { color: var(--muted); padding: 20px 0; text-align: center; }
+      .bar { height: 6px; border-radius: 3px; background: var(--accent); opacity: .65; }
+      .barwrap { width: 120px; background: #eef1f3; border-radius: 3px; }
+      code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <div>
+        <h1>模型用量统计</h1>
+        <div class="sub">每次对话调用都会记一笔 · 数据存在本地 SQLite</div>
+      </div>
+      <div class="seg" id="range">
+        <button data-days="1">今天</button>
+        <button data-days="7" class="active">7 天</button>
+        <button data-days="30">30 天</button>
+        <button data-days="90">90 天</button>
+      </div>
+    </div>
+
+    <div class="cards" id="cards"></div>
+
+    <div class="panel">
+      <h2>按模型汇总</h2>
+      <div id="models"></div>
+    </div>
+
+    <div class="panel">
+      <h2>最近调用</h2>
+      <div id="recent"></div>
+    </div>
+
+    <script>
+      const $ = (s) => document.querySelector(s);
+      const getBridge = () => window.AstrBotPluginPage || window.AstrBotPluginView || null;
+      async function waitBridge() {
+        for (let i = 0; i < 100; i++) {
+          const b = getBridge();
+          if (b) {
+            if (b.ready) { try { await b.ready(); } catch (e) {} }
+            return b;
+          }
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        throw new Error("插件桥接未就绪，请刷新页面重试");
+      }
+      const fmt = (n) => Number(n || 0).toLocaleString("en-US");
+      let days = 7;
+
+      function esc(s) {
+        return String(s ?? "").replace(/[&<>"']/g, (c) =>
+          ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      }
+
+      function fmtTime(ts) {
+        if (!ts) return "—";
+        const d = new Date(ts * 1000);
+        const p = (x) => String(x).padStart(2, "0");
+        return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+      }
+
+      function renderCards(d) {
+        const t = d.total || {};
+        const cards = [
+          ["今日调用", fmt(d.today?.count)],
+          [`${days} 天调用`, fmt(t.count)],
+          [`${days} 天 Token`, fmt(t.tokens)],
+          ["累计调用", fmt(d.all_count)],
+        ];
+        $("#cards").innerHTML = cards
+          .map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`)
+          .join("");
+      }
+
+      function renderModels(d) {
+        const rows = d.models || [];
+        if (!rows.length) {
+          $("#models").innerHTML = '<div class="empty">这段时间还没有调用记录</div>';
+          return;
+        }
+        const max = Math.max(...rows.map((r) => r.count)) || 1;
+        $("#models").innerHTML = `
+          <table>
+            <thead><tr>
+              <th>模型</th><th>调用次数</th><th class="num">输入</th>
+              <th class="num">缓存</th><th class="num">输出</th>
+              <th class="num">合计</th><th>最后调用</th>
+            </tr></thead>
+            <tbody>${rows.map((r) => `
+              <tr>
+                <td><code>${esc(r.model)}</code><div class="muted" style="font-size:11px">${esc(r.provider)}</div></td>
+                <td>${fmt(r.count)}<div class="barwrap"><div class="bar" style="width:${Math.round(r.count / max * 100)}%"></div></div></td>
+                <td class="num">${fmt(r.input)}</td>
+                <td class="num">${fmt(r.cached)}</td>
+                <td class="num">${fmt(r.output)}</td>
+                <td class="num">${fmt(r.tokens)}</td>
+                <td class="muted">${fmtTime(r.last)}</td>
+              </tr>`).join("")}
+            </tbody>
+          </table>`;
+      }
+
+      function renderRecent(d) {
+        const rows = (d && d.rows) || [];
+        if (!rows.length) {
+          $("#recent").innerHTML = '<div class="empty">还没有记录</div>';
+          return;
+        }
+        $("#recent").innerHTML = `
+          <table>
+            <thead><tr>
+              <th>时间</th><th>模型</th><th>角色</th>
+              <th class="num">输入</th><th class="num">输出</th>
+              <th class="num">合计</th><th class="num">耗时</th><th>会话</th>
+            </tr></thead>
+            <tbody>${rows.map((r) => `
+              <tr>
+                <td class="muted">${fmtTime(r.ts)}</td>
+                <td><code>${esc(r.model)}</code></td>
+                <td class="muted">${esc(r.role)}</td>
+                <td class="num">${fmt(r.input)}</td>
+                <td class="num">${fmt(r.output)}</td>
+                <td class="num">${fmt(r.tokens)}</td>
+                <td class="num muted">${(r.latency_ms / 1000).toFixed(1)}s</td>
+                <td class="muted" style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${esc(r.umo)}</td>
+              </tr>`).join("")}
+            </tbody>
+          </table>`;
+      }
+
+      async function load() {
+        try {
+          const bridge = await waitBridge();
+          const [sum, rec] = await Promise.all([
+            bridge.apiGet("summary", { days }),
+            bridge.apiGet("recent", { limit: 50 }),
+          ]);
+          renderCards(sum);
+          renderModels(sum);
+          renderRecent(rec);
+        } catch (e) {
+          $("#models").innerHTML = `<div class="empty">读取失败：${esc(e.message || e)}</div>`;
+        }
+      }
+
+      $("#range").addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-days]");
+        if (!btn) return;
+        days = Number(btn.dataset.days);
+        document.querySelectorAll("#range button").forEach((b) => b.classList.toggle("active", b === btn));
+        load();
+      });
+
+      (async () => {
+        try {
+          await load();
+        } catch (e) {
+          $("#models").innerHTML = `<div class="empty">读取失败：${esc(e.message || e)}</div>`;
+        }
+      })();
+    </script>
+  </body>
+</html>
